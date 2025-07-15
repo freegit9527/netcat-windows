@@ -244,7 +244,7 @@ func handleUDPListener(conn *net.UDPConn) {
 
 		data := buffer[:n]
 		now := time.Now().Format("15:04:05")
-		fmt.Printf("\033[33m[%s UDP 来自 %s]:\033[0m %s\n", now, addr, formatData(data))
+		fmt.Printf("[%s UDP 来自 %s]: %s\n", now, addr, formatData(data))
 	}
 }
 
@@ -273,23 +273,7 @@ func handleIncoming(conn net.Conn, protocol string) {
 
 		data := buffer[:n]
 		now := time.Now().Format("15:04:05")
-		
-		var colorCode string
-		switch protocol {
-		case TCP:
-			colorCode = "\033[36m" // 青色
-		case UDP:
-			colorCode = "\033[33m" // 黄色
-		default:
-			colorCode = "\033[0m"  // 默认
-		}
-		
-		fmt.Printf("%s[%s %s 来自 %s]:\033[0m %s\n", 
-			colorCode, 
-			now, 
-			protocol, 
-			conn.RemoteAddr(), 
-			formatData(data))
+		fmt.Printf("[%s %s 来自 %s]: %s\n", now, protocol, conn.RemoteAddr(), formatData(data))
 	}
 }
 
@@ -305,10 +289,6 @@ func handleOutgoing(conn net.Conn, scanner *bufio.Scanner, protocol string) {
 			fmt.Printf("发送失败: %v\n", err)
 			break
 		}
-		
-		// 显示发送的消息（带时间戳和颜色）
-		now := time.Now().Format("15:04:05")
-		fmt.Printf("\033[34m[%s %s 发送]:\033[0m %s\n", now, protocol, text)
 	}
 
 	if tcpConn, ok := conn.(*net.TCPConn); ok {
@@ -408,10 +388,18 @@ func makeConnectTab(window fyne.Window) fyne.CanvasObject {
 	address := widget.NewEntry()
 	address.SetPlaceHolder("IP:端口 (例如: 127.0.0.1:8080)")
 
-	message := widget.NewEntry()
+	// 消息输入框（发送消息）
+	message := widget.NewMultiLineEntry()
 	message.SetPlaceHolder("输入要发送的消息")
+	message.Wrapping = fyne.TextWrapWord
+	
+	// 创建发送消息的黑色背景容器
+	messageBg := canvas.NewRectangle(color.Black)
+	messageScroll := container.NewScroll(message)
+	messageScroll.SetMinSize(fyne.NewSize(800, 100))
+	messageContent := container.NewStack(messageBg, messageScroll)
 
-	// 使用多行文本框
+	// 使用只读的Entry作为接收框
 	response := widget.NewMultiLineEntry()
 	response.SetPlaceHolder("接收到的消息将显示在这里")
 	response.Wrapping = fyne.TextWrapWord
@@ -420,26 +408,11 @@ func makeConnectTab(window fyne.Window) fyne.CanvasObject {
 	// 创建黑色背景容器
 	bg := canvas.NewRectangle(color.Black)
 	scroll := container.NewScroll(response)
-	scroll.SetMinSize(fyne.NewSize(800, 300))
+	scroll.SetMinSize(fyne.NewSize(800, 100))
 	content := container.NewStack(bg, scroll)
 
 	status := widget.NewLabel("就绪")
 	status.Alignment = fyne.TextAlignCenter
-
-	// 添加消息到文本框
-	addMessage := func(text string, isResponse bool) {
-		now := time.Now().Format("15:04:05")
-		var prefix string
-		
-		if isResponse {
-			prefix = fmt.Sprintf("[%s 接收] ", now)
-		} else {
-			prefix = fmt.Sprintf("[%s 发送] ", now)
-		}
-		
-		response.SetText(response.Text + prefix + text + "\n")
-		scroll.ScrollToBottom()
-	}
 
 	// 连接按钮
 	connectBtn := widget.NewButton("连接", func() {
@@ -478,7 +451,6 @@ func makeConnectTab(window fyne.Window) fyne.CanvasObject {
 			mutex.Unlock()
 
 			status.SetText("已连接到 " + address.Text)
-			addMessage(fmt.Sprintf("已连接到 %s", address.Text), true)
 
 			// 处理传入数据
 			go func() {
@@ -487,15 +459,14 @@ func makeConnectTab(window fyne.Window) fyne.CanvasObject {
 					n, err := conn.Read(buffer)
 					if err != nil {
 						if !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
-							addMessage("接收错误: " + err.Error(), true)
+							status.SetText("接收错误: " + err.Error())
 						}
 						return
 					}
 
 					data := buffer[:n]
-					text := formatData(data)
-					
-					addMessage(fmt.Sprintf("[%s]: %s", conn.RemoteAddr(), text), true)
+					response.SetText(response.Text + fmt.Sprintf("[来自 %s]: %s\n", conn.RemoteAddr(), formatData(data)))
+					scroll.ScrollToBottom()
 				}
 			}()
 
@@ -503,9 +474,6 @@ func makeConnectTab(window fyne.Window) fyne.CanvasObject {
 			if message.Text != "" {
 				if _, err := conn.Write([]byte(message.Text)); err != nil {
 					status.SetText("发送失败: " + err.Error())
-					addMessage("发送失败: " + err.Error(), true)
-				} else {
-					addMessage(message.Text, false)
 				}
 			}
 		}()
@@ -521,25 +489,18 @@ func makeConnectTab(window fyne.Window) fyne.CanvasObject {
 		mutex.Lock()
 		defer mutex.Unlock()
 
-		found := false
 		for _, conn := range activeConns {
 			if conn.RemoteAddr().String() == address.Text || strings.Contains(conn.RemoteAddr().String(), address.Text) {
 				if _, err := conn.Write([]byte(message.Text)); err != nil {
 					status.SetText("发送失败: " + err.Error())
-					addMessage("发送失败: " + err.Error(), true)
-				} else {
-					status.SetText("消息已发送")
-					addMessage(message.Text, false)
+					return
 				}
-				found = true
-				break
+				status.SetText("消息已发送")
+				return
 			}
 		}
 
-		if !found {
-			status.SetText("没有找到活动连接")
-			addMessage("错误: 没有活动连接", true)
-		}
+		status.SetText("没有找到活动连接")
 	})
 
 	// 断开按钮
@@ -552,13 +513,11 @@ func makeConnectTab(window fyne.Window) fyne.CanvasObject {
 				conn.Close()
 				activeConns = append(activeConns[:i], activeConns[i+1:]...)
 				status.SetText("已断开连接")
-				addMessage("已断开连接", true)
 				return
 			}
 		}
 
 		status.SetText("没有找到活动连接")
-		addMessage("错误: 没有活动连接", true)
 	})
 
 	form := container.NewVBox(
@@ -567,7 +526,7 @@ func makeConnectTab(window fyne.Window) fyne.CanvasObject {
 		widget.NewLabel("目标地址:"),
 		address,
 		widget.NewLabel("消息:"),
-		message,
+		messageContent,
 		container.NewHBox(
 			connectBtn,
 			sendBtn,
@@ -589,7 +548,7 @@ func makeListenTab(window fyne.Window) fyne.CanvasObject {
 	port := widget.NewEntry()
 	port.SetPlaceHolder("端口号 (例如: 8080)")
 
-	// 使用多行文本框
+	// 使用只读的Entry作为接收框
 	response := widget.NewMultiLineEntry()
 	response.SetPlaceHolder("接收到的消息将显示在这里")
 	response.Wrapping = fyne.TextWrapWord
@@ -603,13 +562,6 @@ func makeListenTab(window fyne.Window) fyne.CanvasObject {
 
 	status := widget.NewLabel("就绪")
 	status.Alignment = fyne.TextAlignCenter
-
-	// 添加消息到文本框
-	addMessage := func(text string) {
-		now := time.Now().Format("15:04:05")
-		response.SetText(response.Text + fmt.Sprintf("[%s] %s\n", now, text))
-		scroll.ScrollToBottom()
-	}
 
 	// 开始监听按钮
 	startBtn := widget.NewButton("开始监听", func() {
@@ -638,7 +590,6 @@ func makeListenTab(window fyne.Window) fyne.CanvasObject {
 				mutex.Unlock()
 
 				status.SetText("正在监听 TCP 端口 " + port.Text)
-				addMessage(fmt.Sprintf("开始监听 TCP 端口 %s", port.Text))
 
 				for {
 					conn, err := listener.Accept()
@@ -647,7 +598,6 @@ func makeListenTab(window fyne.Window) fyne.CanvasObject {
 							return
 						}
 						status.SetText("接受连接失败: " + err.Error())
-						addMessage("接受连接失败: " + err.Error())
 						continue
 					}
 
@@ -656,7 +606,6 @@ func makeListenTab(window fyne.Window) fyne.CanvasObject {
 					mutex.Unlock()
 
 					status.SetText("来自 " + conn.RemoteAddr().String() + " 的新连接")
-					addMessage(fmt.Sprintf("新连接: %s", conn.RemoteAddr().String()))
 
 					// 处理传入数据
 					go func(conn net.Conn) {
@@ -666,14 +615,14 @@ func makeListenTab(window fyne.Window) fyne.CanvasObject {
 							if err != nil {
 								if !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
 									status.SetText("接收错误: " + err.Error())
-									addMessage("接收错误: " + err.Error())
 								}
 								return
 							}
 
 							data := buffer[:n]
-							text := formatData(data)
-							addMessage(fmt.Sprintf("[%s]: %s", conn.RemoteAddr(), text))
+							now := time.Now().Format("15:04:05")
+							response.SetText(response.Text + fmt.Sprintf("[%s 来自 %s]: %s\n", now, conn.RemoteAddr(), formatData(data)))
+							scroll.ScrollToBottom()
 						}
 					}(conn)
 				}
@@ -695,7 +644,6 @@ func makeListenTab(window fyne.Window) fyne.CanvasObject {
 				mutex.Unlock()
 
 				status.SetText("正在监听 UDP 端口 " + port.Text)
-				addMessage(fmt.Sprintf("开始监听 UDP 端口 %s", port.Text))
 
 				buffer := make([]byte, 4096)
 				for {
@@ -705,13 +653,13 @@ func makeListenTab(window fyne.Window) fyne.CanvasObject {
 							return
 						}
 						status.SetText("接收错误: " + err.Error())
-						addMessage("接收错误: " + err.Error())
 						continue
 					}
 
 					data := buffer[:n]
-					text := formatData(data)
-					addMessage(fmt.Sprintf("[UDP 来自 %s]: %s", addr, text))
+					now := time.Now().Format("15:04:05")
+					response.SetText(response.Text + fmt.Sprintf("[%s UDP 来自 %s]: %s\n", now, addr, formatData(data)))
+					scroll.ScrollToBottom()
 				}
 			}
 		}()
@@ -725,12 +673,10 @@ func makeListenTab(window fyne.Window) fyne.CanvasObject {
 		defer mutex.Unlock()
 
 		if protocol.Selected == TCP {
-			for i, listener := range activeListeners {
+			for _, listener := range activeListeners {
 				if listener.Addr().String() == address {
 					listener.Close()
 					status.SetText("已停止监听 TCP 端口 " + port.Text)
-					addMessage("已停止监听 TCP 端口 " + port.Text)
-					activeListeners = append(activeListeners[:i], activeListeners[i+1:]...)
 					return
 				}
 			}
@@ -738,16 +684,14 @@ func makeListenTab(window fyne.Window) fyne.CanvasObject {
 			for i, conn := range activeUDPSocks {
 				if conn.LocalAddr().String() == address {
 					conn.Close()
-					status.SetText("已停止监听 UDP 端口 " + port.Text)
-					addMessage("已停止监听 UDP 端口 " + port.Text)
 					activeUDPSocks = append(activeUDPSocks[:i], activeUDPSocks[i+1:]...)
+					status.SetText("已停止监听 UDP 端口 " + port.Text)
 					return
 				}
 			}
 		}
 
 		status.SetText("没有找到活动监听器")
-		addMessage("错误: 没有活动监听器")
 	})
 
 	form := container.NewVBox(
